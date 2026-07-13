@@ -2736,3 +2736,20 @@ button.assignee-status {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* Global copyright + version footer, pinned bottom-left across all routes. */
+.app-footer {
+  position: fixed;
+  left: 12px;
+  bottom: 8px;
+  z-index: 50;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: #7d9aa2;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 3px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  user-select: none;
+}

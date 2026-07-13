@@ -1491,7 +1491,7 @@ function ProfilPeserta() {
 
   const companyName = organization?.name ?? user?.name ?? '-'
   const sector = organization?.sector ?? '-'
-  const companyLogo = profile.logoUrl
+  const companyLogo = publicFileUrl(profile.logoUrl)
 
   const contactEmail = organization?.email ?? user?.email ?? '-'
   const contactPhone = organization?.phone ?? user?.phone ?? '-'
@@ -3247,7 +3247,7 @@ export default function Dashboard() {
         <div className="page-content">
           <section className="hero-panel" id="summary">
           <div className="role-icon">
-            {role === 'peserta' && participantLogoUrl ? <img src={participantLogoUrl} alt="Company logo" /> : iconForRole(role)}
+            {role === 'peserta' && participantLogoUrl ? <img src={publicFileUrl(participantLogoUrl)} alt="Company logo" /> : iconForRole(role)}
           </div>
           <div><span className="section-kicker">{roleLabels[role]} Workspace</span><h1>Dashboard {roleLabels[role]}</h1><p>{roleSubtitles[role]}</p></div>
           </section>

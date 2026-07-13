@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: esg-score-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: esgscore
+      POSTGRES_USER: esgscore
+      POSTGRES_PASSWORD: esgscore_dev
+    volumes:
+      - esg_score_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U esgscore -d esgscore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: golang:1.26-alpine
+    container_name: esg-score-backend
+    working_dir: /app
+    command: go run ./cmd/api
+    ports:
+      - "8088:8088"
+    environment:
+      PORT: "8088"
+      DATABASE_URL: postgres://esgscore:esgscore_dev@postgres:5432/esgscore?sslmode=disable
+      JWT_SECRET: esg-score-dev-secret
+      JWT_EXPIRY_MINUTES: "1440"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  esg_score_postgres_data:

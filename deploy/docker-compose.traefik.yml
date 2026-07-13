@@ -1,0 +1,25 @@
+services:
+  esg-score-frontend:
+    image: nginx:1.27-alpine
+    container_name: esg_score_frontend
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /var/www/esg-score:/usr/share/nginx/html:ro
+      - /opt/esg-score/nginx/esg-score-subpath.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.esg-score.rule=Host(`oneconnect.cbqaglobal.co.id`) && PathPrefix(`/esg-score`)"
+      - "traefik.http.routers.esg-score.entrypoints=websecure"
+      - "traefik.http.routers.esg-score.tls=true"
+      - "traefik.http.routers.esg-score.tls.certresolver=myresolver"
+      - "traefik.http.routers.esg-score.priority=100"
+      - "traefik.http.services.esg-score.loadbalancer.server.port=80"
+    networks:
+      - web
+
+networks:
+  web:
+    external: true

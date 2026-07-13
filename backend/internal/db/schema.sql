@@ -148,11 +148,17 @@ CREATE TABLE IF NOT EXISTS score_items (
     checklist_item_id VARCHAR(80) NOT NULL REFERENCES checklist_items(id) ON DELETE RESTRICT,
     score             SMALLINT NOT NULL CHECK (score BETWEEN 0 AND 5),
     weighted_score    NUMERIC(10,4) NOT NULL,
+    normalized_weight NUMERIC(10,6) NOT NULL DEFAULT 0,
     note              TEXT,
     assessed_by       UUID REFERENCES users(id) ON DELETE SET NULL,
     assessed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (assessment_id, checklist_item_id)
 );
+
+-- Self-heal for databases created before normalized_weight existed (was previously
+-- applied only via migration_add_normalized_weight.sql). Idempotent: safe every boot.
+ALTER TABLE score_items
+    ADD COLUMN IF NOT EXISTS normalized_weight NUMERIC(10,6) NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS red_flags (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

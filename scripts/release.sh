@@ -55,7 +55,7 @@ while IFS= read -r s; do
     fix:*|fix\(*\)*)    fixed+="- ${s}"$'\n' ;;
     *)                  changed+="- ${s}"$'\n' ;;
   esac
-done < <(git -C "$ROOT" log --no-merges --pretty=format:'%s' $RANGE)
+done < <(git -C "$ROOT" log --no-merges --pretty=format:'%s' $RANGE; echo)
 
 if [ -z "$added$fixed$changed" ]; then
   echo "✗ Tidak ada commit baru sejak ${LAST_TAG:-awal}. Batal." >&2

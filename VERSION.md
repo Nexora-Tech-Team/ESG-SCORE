@@ -11,6 +11,16 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/) dan
 
 <!-- RELEASES -->
 
+## [1.0.1] - 2026-07-14
+
+### Added
+
+- feat: add assessor jury profile panel
+
+### Fixed
+
+- fix: handle single commit release changelog
+
 ## [1.0.0] - 2026-07-13
 
 Baseline rilis produksi pertama di `https://oneconnect.cbqaglobal.co.id/esg-score/`.

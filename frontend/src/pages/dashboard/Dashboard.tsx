@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Award, BarChart3, Bell, CheckCircle2, ClipboardCheck, ClipboardList, Eye, EyeOff, FileCheck2, LayoutDashboard, LogOut, PencilLine, ShieldCheck, SlidersHorizontal, Upload, User as UserIcon, Users, X } from 'lucide-react'
+import { Award, BarChart3, Bell, Briefcase, Building2, CalendarDays, Camera, CheckCircle2, ClipboardCheck, ClipboardList, Eye, EyeOff, FileCheck2, LayoutDashboard, LogOut, Mail, PencilLine, Phone, ShieldCheck, SlidersHorizontal, Upload, User as UserIcon, Users, X } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import RoleSidebar from '@/components/RoleSidebar'
 import { useAuthStore } from '@/store/authStore'
@@ -169,6 +169,23 @@ function publicFileUrl(fileUrl: string) {
   if (!fileUrl || fileUrl === '#') return fileUrl
   if (fileUrl.startsWith('/')) return `${import.meta.env.BASE_URL.replace(/\/$/, '')}${fileUrl}`
   return fileUrl
+}
+
+function userInitials(name?: string) {
+  return (name || '?')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+}
+
+function formatDate(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'long', year: 'numeric' }).format(date)
 }
 
 function statusLabel(value?: string) {
@@ -3118,12 +3135,104 @@ function DashboardOverview({ role }: { role: Role }) {
   )
 }
 
+interface UserProfilePanelProps {
+  user: User
+  uploading: boolean
+  saving: boolean
+  error: string
+  onClose: () => void
+  onUploadPhoto: (event: ChangeEvent<HTMLInputElement>) => void
+  onSave: (payload: Pick<User, 'position' | 'affiliation' | 'phone'>) => Promise<void>
+}
+
+function UserProfilePanel({ user, uploading, saving, error, onClose, onUploadPhoto, onSave }: UserProfilePanelProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [position, setPosition] = useState(user.position ?? '')
+  const [affiliation, setAffiliation] = useState(user.affiliation ?? '')
+  const [phone, setPhone] = useState(user.phone ?? '')
+  const photoUrl = user.photoUrl ? publicFileUrl(user.photoUrl) : ''
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await onSave({ position, affiliation, phone })
+  }
+
+  return (
+    <div className="modal-overlay profile-modal-overlay" role="presentation" onClick={onClose}>
+      <article className="modal-card user-profile-modal" role="dialog" aria-modal="true" aria-label="Profil user" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header user-profile-header">
+          <div>
+            <span>Profil {roleLabels[user.role]}</span>
+            <h3>{user.name}</h3>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="Tutup profil">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="user-profile-hero">
+          <div className="user-profile-photo">
+            {photoUrl ? <img src={photoUrl} alt={user.name} /> : <strong>{userInitials(user.name)}</strong>}
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading} title="Upload foto profil" aria-label="Upload foto profil">
+              <Camera size={16} />
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={onUploadPhoto} />
+          </div>
+          <div>
+            <p className="user-profile-role">{roleLabels[user.role]}</p>
+            <p className="user-profile-summary">{user.position || 'Jabatan belum diisi'}{user.affiliation ? ` · ${user.affiliation}` : ''}</p>
+            <button type="button" className="profile-upload-inline" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+              <Upload size={16} /> {uploading ? 'Uploading...' : 'Upload Foto'}
+            </button>
+          </div>
+        </div>
+
+        {error && <div className="profile-alert">{error}</div>}
+
+        <form className="user-profile-form" onSubmit={handleSubmit}>
+          <div className="user-profile-details">
+            <div>
+              <span><Mail size={16} />Email</span>
+              <strong>{user.email}</strong>
+            </div>
+            <label>
+              <span><Briefcase size={16} />Jabatan</span>
+              <input value={position} onChange={(event) => setPosition(event.target.value)} placeholder="Contoh: Lead Assessor" />
+            </label>
+            <label>
+              <span><Building2 size={16} />Afiliasi</span>
+              <input value={affiliation} onChange={(event) => setAffiliation(event.target.value)} placeholder="Company / institution" />
+            </label>
+            <label>
+              <span><Phone size={16} />Telepon</span>
+              <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+62 812 0000 0000" />
+            </label>
+            <div>
+              <span><CalendarDays size={16} />Bergabung</span>
+              <strong>{formatDate(user.createdAt)}</strong>
+            </div>
+          </div>
+          <div className="user-profile-actions">
+            <button type="submit" disabled={saving}>{saving ? 'Menyimpan...' : 'Update Profil'}</button>
+          </div>
+        </form>
+      </article>
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const user = useAuthStore((s) => s.user)
+  const updateUser = useAuthStore((s) => s.updateUser)
   const clearAuth = useAuthStore((s) => s.clearAuth)
   const role = user?.role ?? 'peserta'
+  const canOpenUserProfile = role === 'asesor' || role === 'juri'
   const [participantLogoUrl, setParticipantLogoUrl] = useState('')
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [profileUploading, setProfileUploading] = useState(false)
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileError, setProfileError] = useState('')
   const [activeSection, setActiveSection] = useState(() => {
     const hashSection = sectionFromHash()
     if (hashSection !== 'summary') return hashSection
@@ -3222,6 +3331,43 @@ export default function Dashboard() {
     navigate('/login', { replace: true })
   }
 
+  async function handleProfilePhotoUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !user) return
+    setProfileUploading(true)
+    setProfileError('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await api.post('/me/photo', form)
+      const photoUrl = res.data.data?.photoUrl as string | undefined
+      updateUser({ ...user, photoUrl: photoUrl ?? user.photoUrl })
+    } catch (err) {
+      setProfileError(getErrorMessage(err))
+    } finally {
+      setProfileUploading(false)
+    }
+  }
+
+  async function handleProfileUpdate(payload: Pick<User, 'position' | 'affiliation' | 'phone'>) {
+    if (!user) return
+    setProfileSaving(true)
+    setProfileError('')
+    try {
+      const res = await api.patch('/me', {
+        position: payload.position?.trim() ?? '',
+        affiliation: payload.affiliation?.trim() ?? '',
+        phone: payload.phone?.trim() ?? '',
+      })
+      updateUser(res.data.data as User)
+    } catch (err) {
+      setProfileError(getErrorMessage(err))
+    } finally {
+      setProfileSaving(false)
+    }
+  }
+
   return (
     <div className="app-page">
       <header className="app-topbar">
@@ -3231,10 +3377,29 @@ export default function Dashboard() {
           <div><strong>ESG Score</strong><span>Mining ESG Award Platform</span></div>
         </div>
         <div className="topbar-user">
-          <div><strong>{user?.name}</strong><span>{roleLabels[role]}</span></div>
+          {canOpenUserProfile && user ? (
+            <button type="button" className="topbar-profile-button" onClick={() => setProfileOpen(true)} aria-label="Buka profil user">
+              <span className="topbar-avatar">{user.photoUrl ? <img src={publicFileUrl(user.photoUrl)} alt={user.name} /> : userInitials(user.name)}</span>
+              <span className="topbar-profile-copy"><strong>{user.name}</strong><span>{roleLabels[role]}</span></span>
+            </button>
+          ) : (
+            <div><strong>{user?.name}</strong><span>{roleLabels[role]}</span></div>
+          )}
           <button onClick={handleLogout}><LogOut size={16} />Logout</button>
         </div>
       </header>
+
+      {profileOpen && user && canOpenUserProfile && (
+        <UserProfilePanel
+          user={user}
+          uploading={profileUploading}
+          saving={profileSaving}
+          error={profileError}
+          onClose={() => setProfileOpen(false)}
+          onUploadPhoto={handleProfilePhotoUpload}
+          onSave={handleProfileUpdate}
+        />
+      )}
 
       <main className="app-wrap app-shell">
         <RoleSidebar

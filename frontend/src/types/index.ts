@@ -10,6 +10,7 @@ export interface User {
   phone?: string
   role: Role
   avatarUrl?: string
+  photoUrl?: string
   isActive: boolean
   lastLoginAt?: string
   createdAt: string

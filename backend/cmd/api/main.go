@@ -56,6 +56,7 @@ type User struct {
 	Position       *string    `db:"position" json:"position,omitempty"`
 	Affiliation    *string    `db:"affiliation" json:"affiliation,omitempty"`
 	Phone          *string    `db:"phone" json:"phone,omitempty"`
+	PhotoURL       *string    `db:"photo_url" json:"photoUrl,omitempty"`
 	Role           string     `db:"role" json:"role"`
 	IsActive       bool       `db:"is_active" json:"isActive"`
 	CreatedAt      time.Time  `db:"created_at" json:"createdAt"`
@@ -266,6 +267,8 @@ func main() {
 	protected := v1.Group("/")
 	protected.Use(s.authMiddleware())
 	protected.GET("/me", s.me)
+	protected.PATCH("/me", s.updateMe)
+	protected.POST("/me/photo", s.uploadUserPhoto)
 	protected.GET("/score-model", s.scoreModel)
 	protected.GET("/checklist", s.checklist)
 	protected.GET("/assessments/:assessmentId", s.assessmentDetail)
@@ -517,7 +520,7 @@ func requireRole(roles ...string) gin.HandlerFunc {
 func (s *Server) currentUser(c *gin.Context) (User, bool) {
 	claims := c.MustGet("claims").(*Claims)
 	var user User
-	err := s.db.Get(&user, `SELECT id, organization_id, email, name, position, affiliation, phone, role, is_active, created_at FROM users WHERE id = $1`, claims.UserID)
+	err := s.db.Get(&user, `SELECT id, organization_id, email, name, position, affiliation, phone, photo_url, role, is_active, created_at FROM users WHERE id = $1`, claims.UserID)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return User{}, false
@@ -538,11 +541,11 @@ func (s *Server) login(c *gin.Context) {
 	var user User
 	var passwordHash string
 	err := s.db.QueryRowx(`
-		SELECT u.id, u.organization_id, u.email, u.name, u.position, u.affiliation, u.phone, u.role, u.is_active, u.created_at, uc.password_hash
+		SELECT u.id, u.organization_id, u.email, u.name, u.position, u.affiliation, u.phone, u.photo_url, u.role, u.is_active, u.created_at, uc.password_hash
 		FROM users u
 		JOIN user_credentials uc ON uc.user_id = u.id
 		WHERE u.email = $1 AND u.is_active = TRUE
-	`, strings.ToLower(req.Email)).Scan(&user.ID, &user.OrganizationID, &user.Email, &user.Name, &user.Position, &user.Affiliation, &user.Phone, &user.Role, &user.IsActive, &user.CreatedAt, &passwordHash)
+	`, strings.ToLower(req.Email)).Scan(&user.ID, &user.OrganizationID, &user.Email, &user.Name, &user.Position, &user.Affiliation, &user.Phone, &user.PhotoURL, &user.Role, &user.IsActive, &user.CreatedAt, &passwordHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
@@ -882,6 +885,36 @@ func (s *Server) me(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": user})
+}
+
+func (s *Server) updateMe(c *gin.Context) {
+	user, ok := s.currentUser(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Position    string `json:"position"`
+		Affiliation string `json:"affiliation"`
+		Phone       string `json:"phone"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if _, err := s.db.Exec(`
+		UPDATE users
+		SET position = $2, affiliation = $3, phone = $4, updated_at = NOW()
+		WHERE id = $1
+	`, user.ID, nullIfEmpty(req.Position), nullIfEmpty(req.Affiliation), nullIfEmpty(req.Phone)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "profile update failed"})
+		return
+	}
+	var updated User
+	if err := s.db.Get(&updated, `SELECT id, organization_id, email, name, position, affiliation, phone, photo_url, role, is_active, created_at FROM users WHERE id = $1`, user.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "profile lookup failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": updated})
 }
 
 func (s *Server) checklist(c *gin.Context) {
@@ -1295,7 +1328,8 @@ func (s *Server) evidenceLimitReached(assessmentID, checklistItemID string) (boo
 // allowedLogoExt restricts logo uploads to raster images (no SVG to avoid script payloads).
 var allowedLogoExt = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".webp": true}
 
-const maxLogoUploadBytes = 3 << 20 // 3 MB
+const maxLogoUploadBytes = 3 << 20       // 3 MB
+const maxUserPhotoUploadBytes = 10 << 20 // 10 MB
 
 // uploadLogo stores a company logo file and saves its URL on the organization,
 // replacing the old base64-in-database approach that bloated the DB.
@@ -1342,6 +1376,49 @@ func (s *Server) uploadLogo(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"logoUrl": logoURL}})
+}
+
+// uploadUserPhoto stores the current user's profile photo and saves its URL on
+// the users row. Available to any authenticated user (used by asesor/juri).
+func (s *Server) uploadUserPhoto(c *gin.Context) {
+	user, ok := s.currentUser(c)
+	if !ok {
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
+		return
+	}
+	if fileHeader.Size > maxUserPhotoUploadBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file too large (max 10 MB)"})
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	if !allowedLogoExt[ext] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported image type (png/jpg/webp)"})
+		return
+	}
+
+	userID := user.ID.String()
+	dir := filepath.Join("uploads", "photos", userID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare storage"})
+		return
+	}
+	storedName := uuid.NewString() + ext
+	if err := c.SaveUploadedFile(fileHeader, filepath.Join(dir, storedName)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save file"})
+		return
+	}
+
+	photoURL := fmt.Sprintf("/uploads/photos/%s/%s", userID, storedName)
+	if _, err := s.db.Exec(`UPDATE users SET photo_url = $2, updated_at = NOW() WHERE id = $1`, user.ID, photoURL); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save photo"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"photoUrl": photoURL}})
 }
 
 // allowedEvidenceExt is the whitelist of file types participants may upload.

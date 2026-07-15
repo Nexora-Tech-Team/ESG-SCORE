@@ -11,6 +11,20 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/) dan
 
 <!-- RELEASES -->
 
+## [1.0.2] - 2026-07-14
+
+### Fixed
+
+- Eligibility award kini memakai skor pilar yang dinormalisasi berdasarkan bobot
+  kode profil peserta, misalnya `IUJP-PENUNJANG`, bukan nilai kontribusi berbobot.
+- Eligibility kini dikunci sebagai belum lengkap jika skor asesor belum mengisi
+  semua checklist item yang berlaku untuk profil peserta.
+- Progress evidence di detail assessment kini menghitung jumlah checklist item
+  yang memiliki evidence, bukan jumlah total dokumen, sehingga tidak muncul
+  nilai seperti `33/28`.
+- Feedback UX saat asesor menyimpan skor: tombol menampilkan status
+  `Menyimpan...`, `Tersimpan`, atau `Coba Lagi`.
+
 ## [1.0.1] - 2026-07-14
 
 ### Added

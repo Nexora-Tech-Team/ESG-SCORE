@@ -15,8 +15,11 @@ interface ScoreSummary {
   recommendedAwardLevel?: AwardLevel
   effectiveAwardLevel?: AwardLevel
   eligibleForAward?: boolean
+  scoredCount?: number
+  totalItems?: number
   activeRedFlags?: number
   eligibilityNote?: string
+  profileCode?: string
 }
 
 interface JuryAssessment {
@@ -92,6 +95,13 @@ function awardLabel(level: AwardLevel) {
   return labels[level]
 }
 
+function eligibilityLabel(item: { eligibleForAward?: boolean; activeRedFlags?: number; scoredCount?: number; totalItems?: number }) {
+  if ((item.totalItems ?? 0) > 0 && (item.scoredCount ?? 0) < (item.totalItems ?? 0)) return 'Belum lengkap'
+  if ((item.activeRedFlags ?? 0) > 0) return 'Locked'
+  if (item.eligibleForAward === false) return 'Not Eligible'
+  return 'Eligible'
+}
+
 function recommendAward(percentage: number): AwardLevel {
   if (percentage >= 85) return 'grand_champion'
   if (percentage >= 80) return 'leadership'
@@ -112,6 +122,10 @@ function publicFileUrl(fileUrl: string) {
 
 function evidencesFor(evidenceItems: EvidenceItem[], checklistItemId: string) {
   return evidenceItems.filter((item) => item.checklistItemId === checklistItemId)
+}
+
+function completedEvidenceCount(checklist: ChecklistItem[], evidenceItems: EvidenceItem[]) {
+  return checklist.filter((item) => evidenceItems.some((evidence) => evidence.checklistItemId === item.id)).length
 }
 
 export default function AssessmentDetail() {
@@ -136,6 +150,7 @@ export default function AssessmentDetail() {
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [scores, setScores] = useState<Record<string, number>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
+  const [scoreSaveState, setScoreSaveState] = useState<Record<string, 'saving' | 'saved' | 'error'>>({})
   const [award, setAward] = useState<AwardLevel>('not_eligible')
   const [juryNote, setJuryNote] = useState('')
   const [loading, setLoading] = useState(true)
@@ -185,19 +200,22 @@ export default function AssessmentDetail() {
     setLoading(true)
     setError('')
     try {
-      const [metaRes, checklistRes, evidenceRes, scoreRes, summaryRes] = await Promise.all([
+      const [metaRes, evidenceRes, scoreRes, summaryRes] = await Promise.all([
         api.get(`/assessments/${assessmentId}`),
-        api.get('/checklist'),
         api.get(`/assessments/${assessmentId}/evidence`),
         api.get(`/assessments/${assessmentId}/scores`),
         api.get(`/assessments/${assessmentId}/summary`),
       ])
+      const summaryData = summaryRes.data.data ?? emptySummary
+      const checklistRes = await api.get('/checklist', {
+        params: summaryData.profileCode && summaryData.profileCode !== 'BELUM DIPILIH' ? { profileCode: summaryData.profileCode } : undefined,
+      })
       const redFlagsRes = await api.get(`/assessments/${assessmentId}/red-flags`)
       setMeta(metaRes.data.data ?? null)
       setChecklist(checklistRes.data.data ?? [])
       setEvidenceItems(evidenceRes.data.data ?? [])
       setScoreItems(scoreRes.data.data ?? [])
-      setSummary(summaryRes.data.data ?? emptySummary)
+      setSummary(summaryData)
       setRedFlags(redFlagsRes.data.data ?? [])
 
       if (role === 'juri') {
@@ -271,6 +289,8 @@ export default function AssessmentDetail() {
   }
 
   async function saveScore(item: ChecklistItem) {
+    if (scoreSaveState[item.id] === 'saving') return
+    setScoreSaveState((state) => ({ ...state, [item.id]: 'saving' }))
     try {
       await api.post(`/assessments/${assessmentId}/scores`, {
         checklistItemId: item.id,
@@ -278,7 +298,17 @@ export default function AssessmentDetail() {
         note: notes[item.id] ?? scoreFor(scoreItems, item.id)?.note ?? '',
       })
       await loadDetail()
+      setScoreSaveState((state) => ({ ...state, [item.id]: 'saved' }))
+      window.setTimeout(() => {
+        setScoreSaveState((state) => {
+          if (state[item.id] !== 'saved') return state
+          const next = { ...state }
+          delete next[item.id]
+          return next
+        })
+      }, 1800)
     } catch (err) {
+      setScoreSaveState((state) => ({ ...state, [item.id]: 'error' }))
       setError(getErrorMessage(err))
     }
   }
@@ -388,10 +418,10 @@ export default function AssessmentDetail() {
                   <div><span>Status</span><strong>{statusLabel(meta?.status ?? juryRow?.assessmentStatus)}</strong></div>
                   <div><span>Peserta</span><strong>{meta?.organizationName ?? juryRow?.participantName ?? '-'}</strong></div>
                   <div><span>Asesor</span><strong>{meta?.assessorName ?? '-'}</strong></div>
-                  <div><span>Progress Evidence</span><strong>{evidenceItems.length}/{checklist.length}</strong></div>
+                  <div><span>Progress Evidence</span><strong>{completedEvidenceCount(checklist, evidenceItems)}/{checklist.length}</strong></div>
                   <div><span>Progress Score</span><strong>{scoreItems.length}/{checklist.length}</strong></div>
                   <div><span>Red Flag</span><strong>{redFlags.filter((item) => item.isActive).length}</strong></div>
-                  <div><span>Eligibility</span><strong>{summary.eligibleForAward === false ? 'Locked' : 'Eligible'}</strong></div>
+                  <div><span>Eligibility</span><strong>{eligibilityLabel(summary)}</strong></div>
                 </div>
                 {summary.eligibilityNote && <p className="panel-muted">{summary.eligibilityNote}</p>}
                 {role === 'admin' && meta && (
@@ -476,6 +506,7 @@ export default function AssessmentDetail() {
                         const score = scoreFor(scoreItems, item.id)
                         const isFull = evidences.length >= MAX_EVIDENCE
                         const uploading = uploadingId === item.id
+                        const saveState = scoreSaveState[item.id]
                         return (
                           <tr key={item.id}>
                             <td><strong>{areaCode(item.questionNumber)}</strong></td>
@@ -549,7 +580,11 @@ export default function AssessmentDetail() {
                               {role === 'asesor' && (
                                 <div className="score-action">
                                   <textarea rows={3} value={notes[item.id] ?? score?.note ?? ''} onChange={(e) => setNotes((state) => ({ ...state, [item.id]: e.target.value }))} placeholder="Catatan asesor" />
-                                  <button onClick={() => saveScore(item)}><Save size={15} />Simpan Skor</button>
+                                  <button onClick={() => saveScore(item)} disabled={saveState === 'saving'}>
+                                    <Save size={15} />{saveState === 'saving' ? 'Menyimpan...' : saveState === 'saved' ? 'Tersimpan' : saveState === 'error' ? 'Coba Lagi' : 'Simpan Skor'}
+                                  </button>
+                                  {saveState === 'saved' && <span className="score-save-feedback score-save-feedback-ok"><CheckCircle2 size={14} /> Skor tersimpan</span>}
+                                  {saveState === 'error' && <span className="score-save-feedback score-save-feedback-error">Gagal menyimpan</span>}
                                 </div>
                               )}
                               {(role === 'admin' || role === 'juri') && <span className="panel-muted">Read-only</span>}

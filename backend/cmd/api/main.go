@@ -193,11 +193,15 @@ type JuryAssessmentRow struct {
 	ParticipantID         uuid.UUID  `db:"participant_id" json:"participantId"`
 	ParticipantName       string     `db:"participant_name" json:"participantName"`
 	AssessmentStatus      string     `db:"assessment_status" json:"assessmentStatus"`
+	LicenseType           *string    `db:"license_type" json:"-"`
+	MainServiceType       *string    `db:"main_service_type" json:"-"`
 	Environmental         float64    `db:"environmental" json:"environmental"`
 	Social                float64    `db:"social" json:"social"`
 	Governance            float64    `db:"governance" json:"governance"`
 	Total                 float64    `db:"total" json:"total"`
 	Percentage            float64    `db:"percentage" json:"percentage"`
+	ScoredCount           int        `db:"scored_count" json:"scoredCount"`
+	TotalItems            int        `db:"-" json:"totalItems"`
 	RecommendedAwardLevel string     `json:"recommendedAwardLevel"`
 	EffectiveAwardLevel   string     `json:"effectiveAwardLevel"`
 	EligibleForAward      bool       `json:"eligibleForAward"`
@@ -1767,6 +1771,19 @@ func recommendAwardLevel(env, social, gov float64) string {
 	return string(scoring.DetermineAwardLevel(env, social, gov))
 }
 
+func normalizePillarScores(envWeighted, socialWeighted, govWeighted float64, target ProfileWeightTarget) (envScore, socialScore, govScore float64) {
+	if target.Environmental > 0 {
+		envScore = envWeighted / target.Environmental
+	}
+	if target.Social > 0 {
+		socialScore = socialWeighted / target.Social
+	}
+	if target.Governance > 0 {
+		govScore = govWeighted / target.Governance
+	}
+	return envScore, socialScore, govScore
+}
+
 func (s *Server) activeRedFlagCount(assessmentID string) (int, error) {
 	var count int
 	if err := s.db.Get(&count, `
@@ -1779,7 +1796,43 @@ func (s *Server) activeRedFlagCount(assessmentID string) (int, error) {
 	return count, nil
 }
 
-func (s *Server) awardState(assessmentID string, env, social, gov, grandScore float64) (recommended string, effective string, eligible bool, activeCount int, grandEligible bool, note string, err error) {
+func (s *Server) scoreProgress(assessmentID, profileCode string) (scoredCount int, totalItems int, err error) {
+	if profileCode == "" || profileCode == "BELUM DIPILIH" {
+		if err := s.db.Get(&scoredCount, `SELECT COUNT(*) FROM score_items WHERE assessment_id = $1`, assessmentID); err != nil {
+			return 0, 0, err
+		}
+		if err := s.db.Get(&totalItems, `SELECT COUNT(*) FROM checklist_items`); err != nil {
+			return 0, 0, err
+		}
+		return scoredCount, totalItems, nil
+	}
+
+	applicable := `
+		ci.applicability_tag IS NULL
+		OR ci.applicability_tag = ''
+		OR ',' || REPLACE(ci.applicability_tag, ' ', '') || ',' LIKE '%,' || $2 || ',%'
+	`
+	if err := s.db.Get(&scoredCount, `
+		SELECT COUNT(DISTINCT si.checklist_item_id)
+		FROM score_items si
+		JOIN checklist_items ci ON ci.id = si.checklist_item_id
+		WHERE si.assessment_id = $1 AND (`+applicable+`)
+	`, assessmentID, profileCode); err != nil {
+		return 0, 0, err
+	}
+	if err := s.db.Get(&totalItems, `
+		SELECT COUNT(*)
+		FROM checklist_items ci
+		WHERE ci.applicability_tag IS NULL
+		   OR ci.applicability_tag = ''
+		   OR ',' || REPLACE(ci.applicability_tag, ' ', '') || ',' LIKE '%,' || $1 || ',%'
+	`, profileCode); err != nil {
+		return 0, 0, err
+	}
+	return scoredCount, totalItems, nil
+}
+
+func (s *Server) awardState(assessmentID string, env, social, gov, grandScore float64, scoredCount, totalItems int) (recommended string, effective string, eligible bool, activeCount int, grandEligible bool, note string, err error) {
 	activeCount, err = s.activeRedFlagCount(assessmentID)
 	if err != nil {
 		return "", "", false, 0, false, "", err
@@ -1795,16 +1848,37 @@ func (s *Server) awardState(assessmentID string, env, social, gov, grandScore fl
 
 	recommended = recommendAwardLevel(env, social, gov)
 	effective = recommended
-	eligible = true
-	grandEligible = scoring.IsGrandChampionEligible(grandScore, minPillar, activeCount)
-	note = "Eligible for award"
+	eligible = false
+	grandEligible = false
+	note = "Not eligible for award"
+
+	if totalItems == 0 {
+		effective = "not_eligible"
+		note = "Checklist profile belum tersedia."
+		return recommended, effective, eligible, activeCount, grandEligible, note, nil
+	}
+
+	if scoredCount < totalItems {
+		effective = "not_eligible"
+		note = fmt.Sprintf("Belum eligible: scoring belum lengkap (%d/%d item).", scoredCount, totalItems)
+		return recommended, effective, eligible, activeCount, grandEligible, note, nil
+	}
+
+	if recommended == string(scoring.AwardNotEligible) {
+		effective = "not_eligible"
+		note = "Belum eligible: skor minimum pilar masih di bawah threshold Foundation (2.0)."
+		return recommended, effective, eligible, activeCount, grandEligible, note, nil
+	}
 
 	if activeCount > 0 {
 		effective = "not_eligible"
-		eligible = false
-		grandEligible = false
 		note = fmt.Sprintf("Automatically locked by %d active red flag(s).", activeCount)
+		return recommended, effective, eligible, activeCount, grandEligible, note, nil
 	}
+
+	eligible = true
+	grandEligible = scoring.IsGrandChampionEligible(grandScore, minPillar, activeCount)
+	note = "Eligible for award"
 
 	return recommended, effective, eligible, activeCount, grandEligible, note, nil
 }
@@ -1838,15 +1912,34 @@ func (s *Server) assessmentSummary(c *gin.Context) {
 	}
 	profileTarget.Total = profileTarget.Environmental + profileTarget.Social + profileTarget.Governance
 
-	recommended, effective, eligible, activeCount, grandEligible, note, err := s.awardState(assessmentID, env, soc, gov, grandScore)
+	scoredCount, totalItems, err := s.scoreProgress(assessmentID, profileCode)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "score progress failed"})
+		return
+	}
+	envScore, socScore, govScore := normalizePillarScores(env, soc, gov, profileTarget)
+	recommended, effective, eligible, activeCount, grandEligible, note, err := s.awardState(assessmentID, envScore, socScore, govScore, grandScore, scoredCount, totalItems)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "red flag summary failed"})
 		return
+	}
+	minPillarScore := envScore
+	if socScore < minPillarScore {
+		minPillarScore = socScore
+	}
+	if govScore < minPillarScore {
+		minPillarScore = govScore
 	}
 	summary["recommendedAwardLevel"] = recommended
 	summary["effectiveAwardLevel"] = effective
 	summary["eligibleForAward"] = eligible
 	summary["activeRedFlags"] = activeCount
+	summary["scoredCount"] = scoredCount
+	summary["totalItems"] = totalItems
+	summary["environmentalScore"] = envScore
+	summary["socialScore"] = socScore
+	summary["governanceScore"] = govScore
+	summary["minPillarScore"] = minPillarScore
 	summary["grandChampionEligible"] = grandEligible
 	summary["eligibilityNote"] = note
 	summary["profileTarget"] = profileTarget
@@ -1890,12 +1983,15 @@ func (s *Server) juryAssessments(c *gin.Context) {
 			a.id AS assessment_id,
 			o.id AS participant_id,
 			o.name AS participant_name,
+			o.license_type,
+			o.main_service_type,
 			a.status AS assessment_status,
 			COALESCE(SUM(CASE WHEN ci.pillar = 'environmental' THEN si.weighted_score ELSE 0 END), 0) AS environmental,
 			COALESCE(SUM(CASE WHEN ci.pillar = 'social' THEN si.weighted_score ELSE 0 END), 0) AS social,
 			COALESCE(SUM(CASE WHEN ci.pillar = 'governance' THEN si.weighted_score ELSE 0 END), 0) AS governance,
 			COALESCE(SUM(si.weighted_score), 0) AS total,
 			COALESCE(SUM(si.weighted_score), 0) / 5 * 100 AS percentage,
+			COUNT(DISTINCT si.checklist_item_id) AS scored_count,
 			jd.award_level,
 			jd.note AS decision_note,
 			jd.decided_at
@@ -1905,20 +2001,42 @@ func (s *Server) juryAssessments(c *gin.Context) {
 		LEFT JOIN checklist_items ci ON ci.id = si.checklist_item_id
 		LEFT JOIN jury_decisions jd ON jd.assessment_id = a.id
 		WHERE a.status IN ('jury_review', 'finalized')
-		GROUP BY a.id, o.id, o.name, a.status, jd.award_level, jd.note, jd.decided_at
+		GROUP BY a.id, o.id, o.name, o.license_type, o.main_service_type, a.status, jd.award_level, jd.note, jd.decided_at
 		ORDER BY percentage DESC, o.name ASC
 	`); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "jury assessments failed"})
 		return
 	}
 	for i := range rows {
+		profileCode := profileCodeFromProfile(rows[i].LicenseType, rows[i].MainServiceType)
+		scoredCount, totalItems, err := s.scoreProgress(rows[i].AssessmentID.String(), profileCode)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "jury score progress failed"})
+			return
+		}
+		rows[i].ScoredCount = scoredCount
+		rows[i].TotalItems = totalItems
+		var target ProfileWeightTarget
+		if err := s.db.Get(&target, `
+			SELECT profile_code, environmental, social, governance, rationale, created_at, updated_at
+			FROM profile_weight_targets
+			WHERE profile_code = $1
+		`, profileCode); err != nil {
+			if err != sql.ErrNoRows {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "jury profile target failed"})
+				return
+			}
+		}
+		envScore, socialScore, govScore := normalizePillarScores(rows[i].Environmental, rows[i].Social, rows[i].Governance, target)
 		// rows[i].Percentage is actually grandScore from the calculation
 		recommended, effective, eligible, activeCount, grandEligible, note, err := s.awardState(
 			rows[i].AssessmentID.String(),
-			rows[i].Environmental,
-			rows[i].Social,
-			rows[i].Governance,
+			envScore,
+			socialScore,
+			govScore,
 			rows[i].Percentage, // This is grandScore
+			scoredCount,
+			totalItems,
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "jury eligibility failed"})

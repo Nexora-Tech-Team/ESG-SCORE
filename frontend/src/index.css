@@ -2610,6 +2610,27 @@ button.assignee-status {
   min-width: 240px;
 }
 
+.score-action button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.score-save-feedback {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.score-save-feedback-ok {
+  color: #0e7c66;
+}
+
+.score-save-feedback-error {
+  color: #b42318;
+}
+
 .profile-alert {
   display: flex;
   align-items: flex-start;

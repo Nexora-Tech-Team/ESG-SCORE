@@ -42,6 +42,8 @@ interface ScoreSummary {
   recommendedAwardLevel?: AwardLevel
   effectiveAwardLevel?: AwardLevel
   eligibleForAward?: boolean
+  scoredCount?: number
+  totalItems?: number
   activeRedFlags?: number
   eligibilityNote?: string
   profileCode?: string
@@ -61,6 +63,8 @@ interface JuryAssessment {
   recommendedAwardLevel?: AwardLevel
   effectiveAwardLevel?: AwardLevel
   eligibleForAward?: boolean
+  scoredCount?: number
+  totalItems?: number
   activeRedFlags?: number
   eligibilityNote?: string
   awardLevel?: AwardLevel
@@ -144,6 +148,13 @@ function awardLabel(level: AwardLevel) {
     not_eligible: 'Not Eligible',
   }
   return labels[level]
+}
+
+function eligibilityLabel(item: { eligibleForAward?: boolean; activeRedFlags?: number; scoredCount?: number; totalItems?: number }) {
+  if ((item.totalItems ?? 0) > 0 && (item.scoredCount ?? 0) < (item.totalItems ?? 0)) return 'Belum lengkap'
+  if ((item.activeRedFlags ?? 0) > 0) return 'Locked'
+  if (item.eligibleForAward === false) return 'Not Eligible'
+  return 'Eligible'
 }
 
 function recommendAward(percentage: number): AwardLevel {
@@ -1887,7 +1898,7 @@ function ParticipantSummary() {
         </article>
         <article className="summary-card">
           <span>Eligibility</span>
-          <strong>{summary.eligibleForAward === false ? 'Locked' : 'Eligible'}</strong>
+          <strong>{eligibilityLabel(summary)}</strong>
           <p>{summary.eligibilityNote ?? 'Based on current score.'}</p>
         </article>
       </div>
@@ -1997,12 +2008,8 @@ function AssessorWorkspace() {
 
   async function handleSaveScore(item: ChecklistItem, score: ScoreItem['score'], note: string) {
     if (!activeAssignment) return
-    try {
-      await api.post(`/assessments/${activeAssignment.assessmentId}/scores`, { checklistItemId: item.id, score, note })
-      await loadAssessmentData(activeAssignment.assessmentId)
-    } catch (err) {
-      setError(getErrorMessage(err))
-    }
+    await api.post(`/assessments/${activeAssignment.assessmentId}/scores`, { checklistItemId: item.id, score, note })
+    await loadAssessmentData(activeAssignment.assessmentId)
   }
 
   async function handleSubmitToJury() {
@@ -2145,7 +2152,7 @@ function JuryWorkspace() {
         </article>
         <article className="summary-card">
           <span>Eligibility</span>
-          <strong>{selectedRow.eligibleForAward === false ? 'Locked' : 'Eligible'}</strong>
+          <strong>{eligibilityLabel(selectedRow)}</strong>
           <p>{selectedRow.eligibilityNote ?? 'Eligible by score.'}</p>
         </article>
       </div>
@@ -2254,12 +2261,32 @@ function ChecklistTable(props: {
   onUploadEvidence?: (item: ChecklistItem, file: File) => void
   onDeleteEvidence?: (evidenceId: string) => void
   uploadingId?: string
-  onSaveScore?: (item: ChecklistItem, score: ScoreItem['score'], note: string) => void
+  onSaveScore?: (item: ChecklistItem, score: ScoreItem['score'], note: string) => Promise<void>
 }) {
   const [scores, setScores] = useState<Record<string, number>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [scoreSaveState, setScoreSaveState] = useState<Record<string, 'saving' | 'saved' | 'error'>>({})
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
+
+  async function handleSaveScore(item: ChecklistItem, currentScore: ScoreItem['score'], note: string) {
+    if (!props.onSaveScore || scoreSaveState[item.id] === 'saving') return
+    setScoreSaveState((state) => ({ ...state, [item.id]: 'saving' }))
+    try {
+      await props.onSaveScore(item, currentScore, note)
+      setScoreSaveState((state) => ({ ...state, [item.id]: 'saved' }))
+      window.setTimeout(() => {
+        setScoreSaveState((state) => {
+          if (state[item.id] !== 'saved') return state
+          const next = { ...state }
+          delete next[item.id]
+          return next
+        })
+      }, 1800)
+    } catch {
+      setScoreSaveState((state) => ({ ...state, [item.id]: 'error' }))
+    }
+  }
 
   // Group items by pillar, keeping the fixed E/S/G order.
   const groups = useMemo(() => {
@@ -2288,6 +2315,7 @@ function ChecklistTable(props: {
     const score = scoreFor(props.scoreItems, item.id)
     const isFull = evidences.length >= MAX_EVIDENCE_PER_ITEM
     const uploading = props.uploadingId === item.id
+    const saveState = scoreSaveState[item.id]
     return (
       <tr key={item.id}>
         <td><strong>{areaCode(item.questionNumber)}</strong></td>
@@ -2360,7 +2388,14 @@ function ChecklistTable(props: {
           ) : (
             <div className="score-action">
               <textarea rows={3} value={notes[item.id] ?? score?.note ?? ''} onChange={(e) => setNotes((state) => ({ ...state, [item.id]: e.target.value }))} placeholder="Catatan asesor" />
-              <button onClick={() => props.onSaveScore?.(item, (scores[item.id] ?? score?.score ?? 0) as ScoreItem['score'], notes[item.id] ?? score?.note ?? '')}>Simpan Skor</button>
+              <button
+                disabled={saveState === 'saving'}
+                onClick={() => handleSaveScore(item, (scores[item.id] ?? score?.score ?? 0) as ScoreItem['score'], notes[item.id] ?? score?.note ?? '')}
+              >
+                {saveState === 'saving' ? 'Menyimpan...' : saveState === 'saved' ? 'Tersimpan' : saveState === 'error' ? 'Coba Lagi' : 'Simpan Skor'}
+              </button>
+              {saveState === 'saved' && <span className="score-save-feedback score-save-feedback-ok"><CheckCircle2 size={14} /> Skor tersimpan</span>}
+              {saveState === 'error' && <span className="score-save-feedback score-save-feedback-error">Gagal menyimpan</span>}
             </div>
           )}
         </td>
@@ -2897,7 +2932,7 @@ function JuryAssessmentsTable({ rows }: { rows: JuryAssessment[] }) {
                   <td><strong>{formatPct(r.percentage ?? 0)}</strong></td>
                   <td>{award ? awardLabel(award) : '-'}</td>
                   <td>{flags > 0 ? <span className="redflag-pill">{flags}</span> : <span className="panel-muted">0</span>}</td>
-                  <td>{r.eligibleForAward === false ? <span className="panel-muted">Locked</span> : <span className="eligible-pill">Eligible</span>}</td>
+                  <td>{r.eligibleForAward === true ? <span className="eligible-pill">{eligibilityLabel(r)}</span> : <span className="panel-muted">{eligibilityLabel(r)}</span>}</td>
                   <td>
                     <button
                       type="button"
